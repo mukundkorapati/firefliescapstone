@@ -62,6 +62,14 @@ build-cost reasons; nothing from it carries forward).
 - **`POST /trigger`** — simulates the weekly digest: sends every commitment
   already `open` and tagged to `owner_email`, exactly as it exists in
   `state.json`. It never creates or edits commitments — this is a pure send.
+  Real delivery only works for one Resend-verified demo address (see Known
+  Limitations) — for any other `owner_email`, it skips the real send
+  attempt (which would just be rejected) and redirects to **`GET /inbox`**
+  instead: a simulated email client showing the exact same digest, with the
+  exact same live Done/Not doing links. The resolve mechanism doesn't care
+  how a token URL was obtained, only that it's valid — so this makes the
+  full trigger → resolve → reflected-live loop testable by anyone, with any
+  email, independent of the sandbox sender's recipient restriction.
 - **`GET /confirm`** — the landing page for a clicked email link, for either
   action. There's no visible confirmation step: the page's one form submits
   itself via a script the instant it loads, so a real click in the email

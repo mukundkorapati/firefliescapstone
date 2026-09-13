@@ -72,6 +72,11 @@ async function sendEmail({ to, subject, html }) {
 
 const BASE_URL = process.env.BASE_URL;
 
+// The one address real email delivery works for in this prototype (see
+// sendEmail's Resend sandbox comment above). Anyone else gets the simulated
+// inbox at GET /inbox instead of a real send attempt.
+const DEMO_RECIPIENT = 'mukundkorapati@gmail.com';
+
 // A commitment record has a `status` field; a token record does not.
 // Both live in the same flat state file, keyed by their own id/token.
 function listCommitments(state) {
@@ -82,6 +87,24 @@ function listCommitments(state) {
 
 function openCommitmentsFor(state, ownerEmail) {
   return listCommitments(state).filter(c => c.ownerEmail === ownerEmail && c.status === 'open');
+}
+
+// Rebuilds { commitment, doneLink, notDoingLink } for each open commitment
+// tagged to ownerEmail, using whatever unused tokens already exist for it
+// (created by /trigger). Used by the simulated inbox — it needs the same
+// links a real digest email would have carried, without re-sending anything.
+function buildDigestPreview(state, ownerEmail) {
+  const open = openCommitmentsFor(state, ownerEmail);
+  return open.map(c => {
+    const entries = Object.entries(state);
+    const doneEntry = entries.find(([, v]) => v.commitment_id === c.id && v.action === 'done' && !v.used);
+    const notDoingEntry = entries.find(([, v]) => v.commitment_id === c.id && v.action === 'not_doing' && !v.used);
+    return {
+      commitment: c,
+      doneLink: doneEntry ? `/confirm?token=${doneEntry[0]}` : null,
+      notDoingLink: notDoingEntry ? `/confirm?token=${notDoingEntry[0]}` : null,
+    };
+  });
 }
 
 function pushHistory(commitment, status, extra = {}) {
@@ -108,6 +131,80 @@ function renderStandalone(bodyHtml) {
 </body>
 </html>`;
 }
+
+// A simulated email client for any recipient other than DEMO_RECIPIENT (see
+// /trigger) — same confirm links a real digest would have carried, just
+// read here instead of in an actual inbox, so the resolve flow is testable
+// by anyone regardless of the sandbox sender's recipient restriction.
+function renderInboxPage(ownerEmail, items, view) {
+  const count = items.length;
+  const messageRows = items.map(({ commitment, doneLink, notDoingLink }) => `
+    <div class="inbox-commitment-row">
+      <div>
+        <div class="inbox-commitment-text">${esc(commitment.text)}</div>
+        <div class="muted small">${esc(commitment.meeting)}</div>
+      </div>
+      <div class="inbox-commitment-actions">
+        ${doneLink ? `<a class="btn btn-primary" href="${doneLink}">Done</a>` : ''}
+        ${notDoingLink ? `<a class="btn" href="${notDoingLink}">Not doing</a>` : ''}
+      </div>
+    </div>
+  `).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Inbox (demo) — Fireflies</title>
+<style>${FIREFLIES_CSS}</style>
+</head>
+<body>
+  <div class="standalone-wrap">
+    <div class="standalone-brand"><span class="avatar">✉️</span> Simulated inbox</div>
+    <div class="card" style="width:100%; max-width:540px; padding:0; overflow:hidden;">
+      <div style="padding:14px 20px; border-bottom:1px solid var(--border); background:var(--page-bg);">
+        <div class="muted small">
+          Real delivery only works for the demo account in this prototype —
+          here's what would have landed in <strong>${esc(ownerEmail)}</strong>'s inbox.
+        </div>
+      </div>
+      <div id="inbox-list">
+        <div class="inbox-row" onclick="document.getElementById('inbox-list').style.display='none'; document.getElementById('inbox-message').style.display='block';">
+          <span class="avatar">F</span>
+          <div style="flex:1;">
+            <div style="display:flex; justify-content:space-between; gap:10px;">
+              <strong>Fireflies</strong>
+              <span class="muted small">Just now</span>
+            </div>
+            <div>${count} open commitment${count === 1 ? '' : 's'}</div>
+            <div class="muted small">Click to open →</div>
+          </div>
+        </div>
+      </div>
+      <div id="inbox-message" style="display:none; padding:20px;">
+        <button class="link-btn" type="button" onclick="document.getElementById('inbox-list').style.display='block'; document.getElementById('inbox-message').style.display='none';">← Back to inbox</button>
+        <div style="margin:14px 0; padding-bottom:14px; border-bottom:1px solid var(--border);">
+          <div><strong>Fireflies</strong> <span class="muted small">&lt;bot@fireflies-prototype.test&gt;</span></div>
+          <div class="muted small">to ${esc(ownerEmail)}</div>
+          <h3 style="margin:10px 0 0;">${count} open commitment${count === 1 ? '' : 's'}</h3>
+        </div>
+        ${messageRows}
+      </div>
+    </div>
+    <p style="margin-top:18px;"><a href="/?view=${esc(view)}" style="color:var(--purple); font-weight:600;">← Back to Tasks</a></p>
+  </div>
+</body>
+</html>`;
+}
+
+app.get('/inbox', (req, res) => {
+  const ownerEmail = req.query.owner_email;
+  const view = req.query.view === 'mine' ? 'mine' : 'all';
+  if (!ownerEmail) return res.redirect(`/?view=${view}`);
+  const state = loadState();
+  const items = buildDigestPreview(state, ownerEmail);
+  res.send(renderInboxPage(ownerEmail, items, view));
+});
 
 // ---- POST /tasks : create a commitment for testing — text + assignee email
 // required, status always starts 'open'. Meeting is free text: typing a name
@@ -204,26 +301,44 @@ app.post('/trigger', async (req, res) => {
       </p>`;
   }).join('<hr style="border:none;border-top:1px solid #eee"/>');
 
-  // Written to disk only after a successful send — a failed send shouldn't
-  // leave behind tokens for an email nobody actually received.
-  try {
-    await sendEmail({
-      to: owner_email,
-      subject: `${open.length} open commitment${open.length > 1 ? 's' : ''}`,
-      html: rows,
-    });
-  } catch (err) {
-    console.error('sendEmail failed:', err.message);
+  // Real delivery only works for this one Resend-verified demo address (see
+  // README — a sandbox sender without a verified domain can't deliver to
+  // arbitrary recipients, confirmed via testing). Anyone else trying "Send
+  // digest" would just hit that same rejection, which doesn't actually
+  // demonstrate anything — so for any other address, skip the real send
+  // attempt and drop the digest into a simulated inbox instead, where the
+  // exact same confirm links are fully clickable. The resolve mechanism
+  // doesn't care how a token URL was obtained, only that it's valid.
+  const isDemoRecipient = owner_email.trim().toLowerCase() === DEMO_RECIPIENT;
+
+  if (isDemoRecipient) {
+    // Written to disk only after a successful send — a failed send
+    // shouldn't leave behind tokens for an email nobody actually received.
+    try {
+      await sendEmail({
+        to: owner_email,
+        subject: `${open.length} open commitment${open.length > 1 ? 's' : ''}`,
+        html: rows,
+      });
+    } catch (err) {
+      console.error('sendEmail failed:', err.message);
+      return wantsJson
+        ? res.status(502).json({ ok: false, error: err.message })
+        : res.status(502).send(`<p>Couldn't send the digest: ${esc(err.message)}</p><p><a href="/?view=${view}">Back to Tasks</a></p>`);
+    }
+
+    saveState(state);
+
     return wantsJson
-      ? res.status(502).json({ ok: false, error: err.message })
-      : res.status(502).send(`<p>Couldn't send the digest: ${esc(err.message)}</p><p><a href="/?view=${view}">Back to Tasks</a></p>`);
+      ? res.json({ ok: true, sent: true, sent_to: owner_email, count: open.length })
+      : res.redirect(`/?sent=1&count=${open.length}&to=${encodeURIComponent(owner_email)}&view=${view}`);
   }
 
   saveState(state);
 
   return wantsJson
-    ? res.json({ ok: true, sent: true, sent_to: owner_email, count: open.length })
-    : res.redirect(`/?sent=1&count=${open.length}&to=${encodeURIComponent(owner_email)}&view=${view}`);
+    ? res.json({ ok: true, sent: 'simulated', sent_to: owner_email, count: open.length })
+    : res.redirect(`/inbox?owner_email=${encodeURIComponent(owner_email)}&view=${view}`);
 });
 
 // ---- GET /confirm : landing page. For "not_doing", show reason chips + optional notify field. ----
@@ -895,6 +1010,13 @@ a { color:inherit; text-decoration:none; }
 .settings-row-title { font-weight:600; margin-bottom:2px; }
 .icon-tile { width:34px; height:34px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
 .settings-icon { font-size:16px; background:var(--purple-tint); }
+
+.inbox-row { display:flex; align-items:center; gap:12px; padding:16px 20px; cursor:pointer; }
+.inbox-row:hover { background:var(--page-bg); }
+.inbox-commitment-row { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 0; border-bottom:1px solid var(--border); }
+.inbox-commitment-row:last-child { border-bottom:none; }
+.inbox-commitment-text { font-weight:600; }
+.inbox-commitment-actions { display:flex; gap:8px; flex-shrink:0; }
 `;
 
 app.get('/', (req, res) => {
