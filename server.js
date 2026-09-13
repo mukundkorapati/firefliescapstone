@@ -1,8 +1,16 @@
 require('dotenv').config();
+const dns = require('dns');
 const express = require('express');
 const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
 const fs = require('fs');
+const { buildSeedState } = require('./seedData');
+
+// Some hosts (Render included) resolve smtp.gmail.com to an IPv6 address
+// but don't actually have outbound IPv6 routing to it, so the SMTP
+// connection just hangs and times out with ENETUNREACH. Forcing IPv4-first
+// resolution avoids that without needing per-connection socket options.
+dns.setDefaultResultOrder('ipv4first');
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
@@ -11,6 +19,25 @@ app.use(express.json());
 const STATE_FILE = './state.json';
 function loadState() { return fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {}; }
 function saveState(s) { fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2)); }
+
+// A fresh deploy has no state.json — seed it once on boot so the app isn't
+// empty on first load. Never overwrites existing state.
+if (!fs.existsSync(STATE_FILE)) {
+  saveState(buildSeedState());
+  console.log('No state.json found — seeded default demo data.');
+}
+
+// No real auth in this prototype. Whoever opens the app names themselves on
+// first visit (see the identity modal), remembered via a plain cookie — not
+// a session, not a login, just "which of these commitments are yours."
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  if (!header) return {};
+  return Object.fromEntries(header.split(';').map(pair => {
+    const i = pair.indexOf('=');
+    return i === -1 ? [pair.trim(), ''] : [pair.slice(0, i).trim(), decodeURIComponent(pair.slice(i + 1).trim())];
+  }));
+}
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
@@ -229,10 +256,6 @@ app.post('/confirm', async (req, res) => {
 
 // ================= HOMEPAGE : Fireflies-styled tasks view, backed by the same state =================
 
-// No real login in this prototype — "me" is a fixed fixture address for the
-// My Tasks filter, defaulting to whoever the SMTP account belongs to.
-const ME_EMAIL = process.env.ME_EMAIL || process.env.SMTP_USER || 'you@example.com';
-
 const STATUS_META = {
   open:       { label: 'Open',           class: 'status-open' },
   done:       { label: '✅ Done',        class: 'status-done' },
@@ -294,6 +317,43 @@ function esc(s) {
 // page can render a toggle with class="digest-toggle-input" and it'll stay
 // in sync; only the My Tasks page also gets the auto-popup (autoPromptOnLoad)
 // and its modal markup.
+// Viewer identity: no login, so on first visit (no cookie yet) every page
+// blocks with a modal asking "what's your email" — that's what makes My
+// Tasks mean anything per-visitor instead of a single hardcoded fixture.
+// A plain cookie (not localStorage) because the server needs to read it too,
+// to decide server-side which commitments are "yours" before it even renders
+// the page.
+const IDENTITY_MODAL_HTML = `
+  <div class="modal-backdrop" id="identity-modal-backdrop">
+    <div class="modal-card">
+      <div class="modal-title">What's your email?</div>
+      <div class="modal-desc">So My Tasks can show what's actually assigned to you.</div>
+      <input class="field" type="email" id="identity-email-input" placeholder="you@example.com" style="margin-bottom:14px;" onkeydown="if (event.key === 'Enter') saveIdentityEmail();" />
+      <button class="btn btn-primary" type="button" style="width:100%;" onclick="saveIdentityEmail()">Continue</button>
+    </div>
+  </div>
+`;
+
+function identityScript(viewerEmail) {
+  return `
+    const VIEWER_EMAIL = ${JSON.stringify(viewerEmail)};
+    function saveIdentityEmail() {
+      const input = document.getElementById('identity-email-input');
+      const val = input.value.trim();
+      if (!val) { input.focus(); return; }
+      document.cookie = 'fireflies_me=' + encodeURIComponent(val) + '; path=/; max-age=' + (60 * 60 * 24 * 365);
+      location.reload();
+    }
+    function changeIdentity() {
+      document.cookie = 'fireflies_me=; path=/; max-age=0';
+      location.reload();
+    }
+    if (!VIEWER_EMAIL) {
+      document.getElementById('identity-modal-backdrop').classList.add('open');
+    }
+  `;
+}
+
 function digestOptInScript(autoPromptOnLoad) {
   return `
     const AUTO_PROMPT = ${JSON.stringify(!!autoPromptOnLoad)};
@@ -333,12 +393,12 @@ function digestOptInScript(autoPromptOnLoad) {
   `;
 }
 
-function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null } = {}) {
+function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null, viewerEmail = null } = {}) {
   const isMine = view === 'mine';
   const allCommitments = listCommitments(state);
   const meetingNames = [...new Set(allCommitments.map(c => c.meeting || 'Fireflies AI'))].sort();
   const commitments = allCommitments
-    .filter(c => !isMine || c.ownerEmail === ME_EMAIL)
+    .filter(c => !isMine || c.ownerEmail === viewerEmail)
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const openCount = commitments.filter(c => c.status === 'open').length;
   const groups = new Map();
@@ -391,7 +451,9 @@ function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null } =
       }).join('')}
     </div>
   `).join('') : `<div class="card group-card"><div class="empty-note">${
-    isMine ? `No commitments assigned to ${esc(ME_EMAIL)}.` : 'No commitments yet — seed some with seed.js.'
+    isMine
+      ? (viewerEmail ? `No commitments assigned to ${esc(viewerEmail)}.` : 'Enter your email to see what’s assigned to you.')
+      : 'No commitments yet.'
   }</div></div>`;
 
   const historyMap = {};
@@ -415,7 +477,7 @@ function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null } =
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="sidebar-user"><span class="avatar">M</span> Mukund</div>
+      <div class="sidebar-user"><span class="avatar">${viewerEmail ? esc(viewerEmail[0].toUpperCase()) : '?'}</span> ${viewerEmail ? esc(viewerEmail) : 'Not set'}</div>
       <a class="nav-item" href="#">Home</a>
       <a class="nav-item" href="#">AskFred</a>
       <a class="nav-item" href="#">Meetings</a>
@@ -443,7 +505,7 @@ function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null } =
           <div style="display:flex; align-items:center; gap:18px;">
             <form method="POST" action="/trigger" class="digest-inline-form" title="Sends every currently-open commitment tagged to this email as one digest — nothing is created here.">
               <input type="hidden" name="return_view" value="${isMine ? 'mine' : 'all'}" />
-              <input class="field" type="email" name="owner_email" placeholder="you@example.com" required />
+              <input class="field" type="email" name="owner_email" placeholder="you@example.com" value="${esc(viewerEmail || '')}" required />
               <button class="btn btn-primary" type="submit">Send digest</button>
             </form>
           </div>
@@ -491,6 +553,8 @@ function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null } =
 
   <div class="toast" id="toast"></div>
 
+  ${IDENTITY_MODAL_HTML}
+
   ${isMine ? `
   <div class="modal-backdrop" id="digest-modal-backdrop" onclick="if (event.target === this) tryCloseDigestModal();">
     <div class="modal-card">
@@ -521,7 +585,8 @@ function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null } =
       history.replaceState(null, '', url.pathname + url.search);
     }
 
-    ${digestOptInScript(isMine)}
+    ${identityScript(viewerEmail)}
+    ${digestOptInScript(isMine && !!viewerEmail)}
 
     const HISTORY = ${historyJson};
     const STATUS_LABELS = ${JSON.stringify(Object.fromEntries(Object.entries(STATUS_META).map(([k, v]) => [k, v.label])))};
@@ -555,8 +620,22 @@ function renderTasksPage(state, { banner, view = 'all', justUpdatedId = null } =
 // category sub-nav, section cards with icon/title/description/control rows).
 // The digest toggle is Personal-only, matching how it's a per-viewer
 // preference, not something a team-wide settings tab would hold.
-function renderSettingsPage({ tab = 'personal' } = {}) {
+function renderSettingsPage({ tab = 'personal', viewerEmail = null } = {}) {
   const isPersonal = tab !== 'team';
+
+  const accountCard = `
+    <div class="section-label"><span>Account</span></div>
+    <div class="card settings-card">
+      <div class="settings-row">
+        <div class="icon-tile settings-icon">👤</div>
+        <div class="settings-row-text">
+          <div class="settings-row-title">Your email</div>
+          <div class="muted small">${viewerEmail ? esc(viewerEmail) : 'Not set yet'} — this is what My Tasks filters by.</div>
+        </div>
+        <button class="btn" type="button" onclick="changeIdentity()">Change</button>
+      </div>
+    </div>
+  `;
 
   const notificationsCard = `
     <div class="section-label"><span>Notifications</span></div>
@@ -599,9 +678,9 @@ function renderSettingsPage({ tab = 'personal' } = {}) {
   <div class="settings-shell">
     <aside class="settings-sidebar">
       <div class="settings-user">
-        <span class="avatar">M</span>
+        <span class="avatar">${viewerEmail ? esc(viewerEmail[0].toUpperCase()) : '?'}</span>
         <div>
-          <div class="settings-user-email">${esc(ME_EMAIL)}</div>
+          <div class="settings-user-email">${viewerEmail ? esc(viewerEmail) : 'Not set'}</div>
           <div class="muted small">Business Plan</div>
         </div>
       </div>
@@ -616,17 +695,23 @@ function renderSettingsPage({ tab = 'personal' } = {}) {
       <div class="settings-nav-item">📖 Knowledge Base</div>
     </aside>
     <div class="settings-content">
-      ${isPersonal ? notificationsCard : teamEmptyCard}
+      ${isPersonal ? accountCard + notificationsCard : teamEmptyCard}
     </div>
   </div>
 
-  <script>${digestOptInScript(false)}</script>
+  ${IDENTITY_MODAL_HTML}
+
+  <script>
+    ${identityScript(viewerEmail)}
+    ${digestOptInScript(false)}
+  </script>
 </body>
 </html>`;
 }
 
 app.get('/settings', (req, res) => {
-  res.send(renderSettingsPage({ tab: req.query.tab === 'team' ? 'team' : 'personal' }));
+  const viewerEmail = parseCookies(req).fireflies_me || null;
+  res.send(renderSettingsPage({ tab: req.query.tab === 'team' ? 'team' : 'personal', viewerEmail }));
 });
 
 const FIREFLIES_CSS = `
@@ -800,7 +885,8 @@ app.get('/', (req, res) => {
   else if (req.query.confirm === 'already_handled') banner = 'That commitment was already handled — no change made.';
   else if (req.query.confirm === 'invalid') banner = 'That link is invalid or has expired.';
   const justUpdatedId = typeof req.query.updated === 'string' ? req.query.updated : null;
-  res.send(renderTasksPage(state, { banner, view, justUpdatedId }));
+  const viewerEmail = parseCookies(req).fireflies_me || null;
+  res.send(renderTasksPage(state, { banner, view, justUpdatedId, viewerEmail }));
 });
 
 const PORT = process.env.PORT || 3001;

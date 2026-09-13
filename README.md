@@ -7,12 +7,20 @@ build-cost reasons; nothing from it carries forward).
 
 ## What this is
 
+- **Viewer identity** — no login, so on first visit any page blocks with a
+  modal asking "what's your email?" The answer is remembered in a plain
+  cookie (not `localStorage` — the server needs to read it too, to decide
+  server-side which rows are "yours" before rendering). That's what makes
+  **My Tasks** mean something different for each visitor: enter
+  `mukundkorapati@gmail.com` and you see the commitments seeded for that
+  address; a teammate entering `teammate@example.com` sees theirs; a brand
+  new email sees nothing in My Tasks but everything in All Tasks, since that
+  tab isn't filtered. Change it any time from Settings → Personal → Account.
 - **`GET /`** — the homepage *is* the Fireflies Tasks screen, styled against
   the real Fireflies UI (palette, cards, status pills). It reads `state.json`
   directly and renders every commitment's live status (open / done / not
-  doing), grouped by meeting, with **My Tasks** / **All Tasks** tabs (My
-  Tasks filters to a fixed `ME_EMAIL` fixture — there's no real login here)
-  and a **Send digest** control inline in that same top row, right-aligned.
+  doing), grouped by meeting, with **My Tasks** / **All Tasks** tabs and a
+  **Send digest** control inline in that same top row, right-aligned.
   - Each assignee gets a deterministic tag color (hashed from their email),
     so distinct people are visually distinguishable in All Tasks.
   - Status is directly editable via a dropdown on each row (Open / Done /
@@ -91,11 +99,18 @@ cp .env.example .env   # fill in SMTP + BASE_URL, see below
 node server.js
 ```
 
-Open `http://localhost:3001/` — it starts empty ("No commitments yet") until
-`state.json` has something in it. Seed a realistic mix of statuses with:
+Open `http://localhost:3001/` — the server auto-seeds `state.json` with a
+default 14-commitment dataset the first time it boots and finds no state
+file (`seedData.js`, shared with the manual script below), so it's never
+empty on a fresh clone or deploy. Enter `mukundkorapati@gmail.com` at the
+identity prompt to see the pre-assigned My Tasks demo, or any other email to
+explore from a different angle (see "Viewer identity" above).
+
+To reset back to that default dataset at any point (e.g. after testing has
+mutated it), run:
 
 ```bash
-node seed.js you@example.com   # 14 commitments across 4 meetings and 3 assignees
+node seed.js
 ```
 
 Use the **New task** form to create more commitments for testing (task text
@@ -108,10 +123,6 @@ The same trigger works headlessly:
 ```bash
 curl http://localhost:3001/trigger -d "owner_email=you@example.com"
 ```
-
-`ME_EMAIL` (env var, defaults to `SMTP_USER`) controls which address the
-**My Tasks** tab filters to — set it if you want "me" to differ from the
-account sending mail.
 
 ### SMTP options
 
