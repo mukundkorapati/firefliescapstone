@@ -204,13 +204,22 @@ app.post('/trigger', async (req, res) => {
       </p>`;
   }).join('<hr style="border:none;border-top:1px solid #eee"/>');
 
-  saveState(state);
+  // Written to disk only after a successful send — a failed send shouldn't
+  // leave behind tokens for an email nobody actually received.
+  try {
+    await sendEmail({
+      to: owner_email,
+      subject: `${open.length} open commitment${open.length > 1 ? 's' : ''}`,
+      html: rows,
+    });
+  } catch (err) {
+    console.error('sendEmail failed:', err.message);
+    return wantsJson
+      ? res.status(502).json({ ok: false, error: err.message })
+      : res.status(502).send(`<p>Couldn't send the digest: ${esc(err.message)}</p><p><a href="/?view=${view}">Back to Tasks</a></p>`);
+  }
 
-  await sendEmail({
-    to: owner_email,
-    subject: `${open.length} open commitment${open.length > 1 ? 's' : ''}`,
-    html: rows,
-  });
+  saveState(state);
 
   return wantsJson
     ? res.json({ ok: true, sent: true, sent_to: owner_email, count: open.length })
