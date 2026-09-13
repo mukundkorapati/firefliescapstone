@@ -6,6 +6,8 @@ services:
     buildCommand: npm install
     startCommand: node server.js
     envVars:
+      - key: RESEND_API_KEY
+        sync: false
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT

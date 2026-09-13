@@ -124,17 +124,25 @@ The same trigger works headlessly:
 curl http://localhost:3001/trigger -d "owner_email=you@example.com"
 ```
 
-### SMTP options
+### Sending email: Resend vs. SMTP
 
-`.env.example` defaults to Mailtrap's **sandbox** SMTP (`sandbox.smtp.mailtrap.io`) —
-good for confirming mail *sends* without errors, but it captures messages
-into a Mailtrap testing inbox rather than delivering to the real address you
-typed. To actually receive the digest in your own inbox, use a real sender
-instead, e.g.:
-- Gmail SMTP (`smtp.gmail.com:587`) with a Google **App Password** as
-  `SMTP_PASS`, or
-- Mailtrap's separate "Email Sending" (transactional) product with a
-  verified sender, or another transactional provider (Resend, Brevo, etc.)
+`sendEmail()` in `server.js` prefers **Resend's HTTP API** whenever
+`RESEND_API_KEY` is set, falling back to the SMTP transporter otherwise.
+This isn't just a preference — several PaaS hosts, **Render included**,
+silently block or drop outbound raw SMTP connections (port 587/465/25),
+which surfaces as a `nodemailer` connection timeout with no other error.
+HTTP-based providers send over port 443, which is never blocked.
+
+- **Deployed (Render, etc.):** get a free key at [resend.com](https://resend.com)
+  and set `RESEND_API_KEY`. No domain verification needed — it sends from
+  `onboarding@resend.dev` to any recipient out of the box. Override the
+  sender with `RESEND_FROM` if you verify your own domain later.
+- **Local dev:** SMTP works fine, since this restriction is host-specific.
+  `.env.example` defaults to Mailtrap's **sandbox** SMTP, which confirms
+  sends work but captures mail into a Mailtrap test inbox rather than your
+  real one. To actually receive it, use Gmail SMTP (`smtp.gmail.com:587`)
+  with a Google **App Password** as `SMTP_PASS` — remove any spaces from
+  the password Google shows you, it's really 16 characters with none.
 
 `BASE_URL` must match whatever host is serving `/confirm` — `http://localhost:3001`
 while testing locally, or your deployed URL once hosted (the confirm links

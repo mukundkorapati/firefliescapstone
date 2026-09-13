@@ -45,6 +45,31 @@ const transporter = nodemailer.createTransport({
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
 });
 
+// Prefers Resend's HTTP API (port 443, never blocked) when RESEND_API_KEY is
+// set — needed because several PaaS hosts, Render included, silently drop
+// outbound raw SMTP connections. Falls back to the SMTP transporter above,
+// which is fine for local dev where that restriction doesn't apply.
+async function sendEmail({ to, subject, html }) {
+  if (process.env.RESEND_API_KEY) {
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: process.env.RESEND_FROM || 'Fireflies <onboarding@resend.dev>',
+        to,
+        subject,
+        html,
+      }),
+    });
+    if (!resp.ok) throw new Error(`Resend API error ${resp.status}: ${await resp.text()}`);
+    return;
+  }
+  await transporter.sendMail({ from: '"Fireflies" <bot@fireflies-prototype.test>', to, subject, html });
+}
+
 const BASE_URL = process.env.BASE_URL;
 
 // A commitment record has a `status` field; a token record does not.
@@ -181,8 +206,7 @@ app.post('/trigger', async (req, res) => {
 
   saveState(state);
 
-  await transporter.sendMail({
-    from: '"Fireflies" <bot@fireflies-prototype.test>',
+  await sendEmail({
     to: owner_email,
     subject: `${open.length} open commitment${open.length > 1 ? 's' : ''}`,
     html: rows,
