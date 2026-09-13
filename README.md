@@ -168,13 +168,17 @@ in the email are built from this value).
   anyone else's commitment done, or create new ones for any email. The
   identity cookie only decides what **My Tasks** filters to; it's not real
   access control.
-- **First emails from a shared, unverified sender may land in spam.**
-  `onboarding@resend.dev` (Resend's no-setup sender) has no sending history
-  or domain reputation, which spam filters are cautious about by default —
-  this is universal behavior for any brand-new sender, not specific to
-  Resend or a bug here. Fixing it for real would mean verifying your own
-  domain in Resend (sets up proper SPF/DKIM records), out of scope for a
-  prototype. Check spam the first time a digest doesn't show up in inbox.
+- **Digests can only be sent to the Resend account's own email, and may
+  land in spam even then.** `onboarding@resend.dev` is Resend's no-setup
+  sandbox sender — without verifying a custom domain, Resend restricts it
+  to sending only to the address the Resend account itself was created
+  with, and rejects any other recipient with a 422 (surfaced clearly by
+  `/trigger` rather than a blank 500). Even to that one address, a brand
+  new sender has no reputation yet, so check spam the first time a digest
+  doesn't show up in inbox. Both are inherent to using a shared sandbox
+  sender rather than a verified domain, not bugs in this app — the real
+  fix is verifying a domain in Resend (a few DNS records), out of scope
+  for this prototype but straightforward if ever needed.
 
 ## Explicitly out of scope
 
