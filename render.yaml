@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: fireflies-email-capstone
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: BASE_URL
+        sync: false
+      - key: ME_EMAIL
+        sync: false

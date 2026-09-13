@@ -1,1 +1,157 @@
-# firefliescapstone
+# Fireflies commitment tracking — email prototype
+
+Meeting commitments become tracked, one-tap-resolvable objects instead of
+dying in a broadcast summary email — delivered as a digest email instead of
+a Slack DM (the earlier Slack/OAuth prototype was dropped entirely for
+build-cost reasons; nothing from it carries forward).
+
+## What this is
+
+- **`GET /`** — the homepage *is* the Fireflies Tasks screen, styled against
+  the real Fireflies UI (palette, cards, status pills). It reads `state.json`
+  directly and renders every commitment's live status (open / done / not
+  doing), grouped by meeting, with **My Tasks** / **All Tasks** tabs (My
+  Tasks filters to a fixed `ME_EMAIL` fixture — there's no real login here)
+  and a **Send digest** control inline in that same top row, right-aligned.
+  - Each assignee gets a deterministic tag color (hashed from their email),
+    so distinct people are visually distinguishable in All Tasks.
+  - Status is directly editable via a dropdown on each row (Open / Done /
+    Not doing) — choosing Not doing reveals a second dropdown for the reason.
+    This writes straight to `state.json` via `POST /commitments/:id/status`,
+    independent of the token-based email flow below.
+  - Open commitments show an aging badge ("2d 4h open") computed from
+    `createdAt`, and the whole row gets a soft yellow highlight so anything
+    still open is easy to spot at a glance — useful right after resolving
+    one item from a multi-item digest, to catch any others still pending.
+  - A small card under the tabs states "N of M [your/total] commitments
+    still open" for whichever tab you're on — a persistent count, not just
+    the toast, so it's still visible after the toast fades.
+  - Whichever commitment was just resolved (via an email link or the status
+    dropdown) gets a brief pulse animation and a "✓ Just updated" badge that
+    fades after a few seconds — so landing back on a long task list after
+    clicking an email button doesn't leave you hunting for which row changed.
+  - Each row has a history icon that opens a drawer showing every status
+    change with its timestamp, plus when the commitment was created.
+  - Landing on **My Tasks** while not opted into the weekly digest pops up a
+    prompt with a toggle, but only once, ever, per browser (`localStorage`,
+    not `sessionStorage` — every link clicked from an email opens a new tab,
+    which gets a blank `sessionStorage`, so that scope never actually stayed
+    dismissed across the clicks it needed to). Opting in, or dismissing
+    without opting in, both suppress it from auto-showing again on this
+    browser. Toggling it back off from Settings is treated as an explicit
+    request and always re-shows it immediately, bypassing that suppression.
+- **`GET /settings`** — styled after the real Fireflies Settings screen
+  (Personal/Team tabs, a category sub-nav, section cards). The weekly-digest
+  toggle lives here under **Personal → Notifications** — Team has no such
+  setting, since it's a per-viewer preference. Toggling it here or from the
+  My Tasks popup stays in sync (same `localStorage` key, shared across
+  tabs); toggling it off re-shows the popup next time you land on My Tasks.
+- **`POST /tasks`** — creates a commitment for testing: `text` and
+  `assignee_email` are required, status always starts `open`. `meeting` is
+  free text — typing a name that doesn't exist yet is how a new meeting
+  gets created, since meetings aren't a separate stored entity, just a
+  grouping label on commitments.
+- **`POST /trigger`** — simulates the weekly digest: sends every commitment
+  already `open` and tagged to `owner_email`, exactly as it exists in
+  `state.json`. It never creates or edits commitments — this is a pure send.
+- **`GET /confirm`** — the landing page for a clicked email link, for either
+  action. There's no visible confirmation step: the page's one form submits
+  itself via a script the instant it loads, so a real click in the email
+  feels instant. This still protects against link-prescanning (Microsoft
+  Safe Links, Proofpoint, etc. auto-fetch every link in a scanned email) —
+  those fetches are plain GET requests that never execute the page's script,
+  so they can't trigger the write; only a real browser rendering the page
+  does. Not doing no longer prompts for a reason via email — it silently
+  defaults to "prefer not to say" (no reason stored). Picking a specific
+  reason is still possible from the Tasks page's own status dropdown. An
+  invalid or already-resolved token redirects straight to `/` instead of
+  showing a dead-end page.
+- **`POST /confirm`** — the actual state write. Always redirects to
+  `/?view=mine` (not a static "you can close this tab" page), with a toast
+  that also surfaces how many other commitments are still open for that
+  owner — e.g. "Marked ✅ Done. You have 3 more open." — so resolving one
+  item from a multi-item digest doesn't leave the rest silently forgotten.
+- **Idempotency** — a token already used, or a commitment no longer `open`,
+  redirects to `/?view=mine` with an "already handled" toast instead of
+  reprocessing.
+
+All of it reads and writes one flat file, `state.json`, keyed by both
+commitment ids (`c_<timestamp>`, carrying `text`/`meeting`/`status`/
+`ownerEmail`/`history`) and action tokens (uuids, carrying `commitment_id`/
+`action`/`used`) in the same object — resolving something by email is
+immediately visible the next time `/` is loaded, because both read the same
+file. `history` is an array of `{ status, at, reason? }` entries, appended
+to on creation and on every resolution — this is what the drawer renders.
+
+## Running locally
+
+```bash
+npm install
+cp .env.example .env   # fill in SMTP + BASE_URL, see below
+node server.js
+```
+
+Open `http://localhost:3001/` — it starts empty ("No commitments yet") until
+`state.json` has something in it. Seed a realistic mix of statuses with:
+
+```bash
+node seed.js you@example.com   # 14 commitments across 4 meetings and 3 assignees
+```
+
+Use the **New task** form to create more commitments for testing (task text
++ assignee email required, meeting optional/free-text), and the **Send
+digest** form to email every currently-open commitment tagged to an address
+as one digest — it only takes an email, nothing is created by it.
+
+The same trigger works headlessly:
+
+```bash
+curl http://localhost:3001/trigger -d "owner_email=you@example.com"
+```
+
+`ME_EMAIL` (env var, defaults to `SMTP_USER`) controls which address the
+**My Tasks** tab filters to — set it if you want "me" to differ from the
+account sending mail.
+
+### SMTP options
+
+`.env.example` defaults to Mailtrap's **sandbox** SMTP (`sandbox.smtp.mailtrap.io`) —
+good for confirming mail *sends* without errors, but it captures messages
+into a Mailtrap testing inbox rather than delivering to the real address you
+typed. To actually receive the digest in your own inbox, use a real sender
+instead, e.g.:
+- Gmail SMTP (`smtp.gmail.com:587`) with a Google **App Password** as
+  `SMTP_PASS`, or
+- Mailtrap's separate "Email Sending" (transactional) product with a
+  verified sender, or another transactional provider (Resend, Brevo, etc.)
+
+`BASE_URL` must match whatever host is serving `/confirm` — `http://localhost:3001`
+while testing locally, or your deployed URL once hosted (the confirm links
+in the email are built from this value).
+
+## Deploying (Render, free tier)
+
+1. Push this repo to GitHub and create a new **Web Service** on Render
+   pointing at it — `render.yaml` configures the build/start commands.
+2. In the Render dashboard, set these environment variables (not committed):
+   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
+   - `BASE_URL` → `https://<your-render-app>.onrender.com`
+
+## Known limitations (accepted for this prototype, not bugs to fix)
+
+- **Free-tier cold starts.** Render's free plan spins the service down when
+  idle; the first request after a while can take 30–60s to respond.
+- **Flat-file state doesn't survive a redeploy.** `state.json` lives on the
+  instance's local disk, which Render's free tier does not persist across
+  deploys/restarts.
+- **State is shared, not per-visitor.** There's no login, so `state.json` is
+  one file every visitor to the deployed URL reads and writes — everyone
+  sees the same commitments. It survives across requests and across a
+  visitor's own browser sessions (closing the tab changes nothing server-side),
+  but not across a redeploy or an instance restart, per the point above.
+
+## Explicitly out of scope
+
+Slack, mobile push, SMS, real Fireflies API access, production-grade auth,
+persistence beyond the flat state file, notifying anyone other than the
+commitment's own owner (the "not doing" flow only asks for a reason).

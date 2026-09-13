@@ -1,18 +1,19 @@
 {
-  "name": "fireflies-slack",
+  "name": "email-prototype",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "seed": "node seed.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@slack/web-api": "^8.1.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "node-fetch": "^2.7.0"
+    "nodemailer": "^10.0.9",
+    "uuid": "^14.0.2"
   }
 }
