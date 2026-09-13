@@ -163,11 +163,18 @@ in the email are built from this value).
 - **Flat-file state doesn't survive a redeploy.** `state.json` lives on the
   instance's local disk, which Render's free tier does not persist across
   deploys/restarts.
-- **State is shared, not per-visitor.** There's no login, so `state.json` is
-  one file every visitor to the deployed URL reads and writes — everyone
-  sees the same commitments. It survives across requests and across a
-  visitor's own browser sessions (closing the tab changes nothing server-side),
-  but not across a redeploy or an instance restart, per the point above.
+- **Commitments themselves are shared, not per-visitor.** `state.json` is one
+  file every visitor to the deployed URL reads and writes — anyone can mark
+  anyone else's commitment done, or create new ones for any email. The
+  identity cookie only decides what **My Tasks** filters to; it's not real
+  access control.
+- **First emails from a shared, unverified sender may land in spam.**
+  `onboarding@resend.dev` (Resend's no-setup sender) has no sending history
+  or domain reputation, which spam filters are cautious about by default —
+  this is universal behavior for any brand-new sender, not specific to
+  Resend or a bug here. Fixing it for real would mean verifying your own
+  domain in Resend (sets up proper SPF/DKIM records), out of scope for a
+  prototype. Check spam the first time a digest doesn't show up in inbox.
 
 ## Explicitly out of scope
 
