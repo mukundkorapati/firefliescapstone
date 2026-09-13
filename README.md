@@ -134,9 +134,11 @@ which surfaces as a `nodemailer` connection timeout with no other error.
 HTTP-based providers send over port 443, which is never blocked.
 
 - **Deployed (Render, etc.):** get a free key at [resend.com](https://resend.com)
-  and set `RESEND_API_KEY`. No domain verification needed — it sends from
-  `onboarding@resend.dev` to any recipient out of the box. Override the
-  sender with `RESEND_FROM` if you verify your own domain later.
+  and set `RESEND_API_KEY`. No domain verification needed to get sending
+  working at all — but without one, Resend only delivers to the email
+  address the Resend account itself was created with, rejecting any other
+  recipient with a 422 (see Known Limitations below). Verify a domain in
+  Resend, and set `RESEND_FROM`, to send to arbitrary real addresses.
 - **Local dev:** SMTP works fine, since this restriction is host-specific.
   `.env.example` defaults to Mailtrap's **sandbox** SMTP, which confirms
   sends work but captures mail into a Mailtrap test inbox rather than your
@@ -153,7 +155,8 @@ in the email are built from this value).
 1. Push this repo to GitHub and create a new **Web Service** on Render
    pointing at it — `render.yaml` configures the build/start commands.
 2. In the Render dashboard, set these environment variables (not committed):
-   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
+   - `RESEND_API_KEY` — required for email to actually send; Render blocks
+     outbound SMTP, so the `SMTP_*` vars alone won't work here (see below)
    - `BASE_URL` → `https://<your-render-app>.onrender.com`
 
 ## Known limitations (accepted for this prototype, not bugs to fix)
